@@ -1,0 +1,498 @@
+#!/usr/bin/perl -w
+################################################################################
+#
+################################################################################
+################################################################################
+#
+# Copyright (C) 2013 stepping stone GmbH
+#                    Berne, Switzerland
+#                    http://www.stepping-stone.ch
+#                    support@stepping-stone.ch
+#
+# Authors:
+#   Pat Kläy <pat.klaey@stepping-stone.ch>
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+#
+# $Id$
+#
+################################################################################
+
+################################################################################
+# Incorporate code with use (evaluates the included file at compile time).
+################################################################################
+use warnings;
+use strict;
+
+use Getopt::Long;
+Getopt::Long::Configure("no_auto_abbrev");
+use Sys::Syslog;
+use Config::IniFiles;
+use Cwd 'abs_path';
+use File::Basename;
+use Sysadm::Install qw(:all);
+use File::Path;
+use Net::LDAP; 
+use Net::LDAP::Constant qw(
+  LDAP_SUCCESS
+);
+
+
+$| = 1;                        # Turn buffering off, so that the output is flushed immediately
+
+################################################################################
+# Start the POD documentation information
+################################################################################
+=pod
+
+=head1 NAME
+
+.pl
+
+=head1 DESCRIPTION
+
+This script gets the arguments from  ...
+
+The script uses syslog for logging purposes.
+
+Command Line Interface (CLI) parameters:
+
+=head1 USAGE
+
+./
+
+=head1 CREATED
+
+2012-01-01 pat.klaey@stepping-stone.ch created
+
+=head1 VERSION
+
+=over
+
+=item 2012-01-01 pat.klaey@stepping-stone.ch created
+
+=back
+
+=head1 INCORPORATED CODE
+
+Incorporated code with use:
+
+=over
+
+=over
+
+=item warnings;
+
+=item strict;
+
+=item Getopt::Long;
+
+=item Sys::Syslog;
+
+=back
+
+=back
+
+=cut
+################################################################################
+# End the POD documentation information
+################################################################################
+
+################################################################################
+# Process the single character or long command line arguments.
+################################################################################
+my %opts;
+GetOptions (
+    \%opts,
+    "help|h",       # This option will display a short help message.
+);
+
+################################################################################
+# Read the configuration file
+################################################################################
+my $location=dirname(abs_path($0));
+my $file = basename($0);
+
+my $cfg=Config::IniFiles->new(-file => "$location/../etc/$file.conf");
+
+################################################################################
+# Variable definitions
+################################################################################
+my $debug             = 0;   # Debug modus: 0: off, 1: on
+
+################################################################################
+# Constant definitions
+################################################################################
+use constant SUCCESS_CODE                         => 0;
+use constant ERROR_CODE                           => 1;
+
+################################################################################
+# Help text
+################################################################################
+my $help = "\nPlease use pod2text $0 for the online help\n\n";
+
+
+################################################################################
+# Main Programme
+################################################################################
+
+# Start syslog
+openlog(abs_path($0),"ndelay,pid","local0");
+
+# Check the command line arguments
+checkCommandLineArguments();
+
+my $root_dir = $cfg->val("General","RootDir");
+my $safe = $cfg->val("General","Safe");
+$debug = $cfg->val("General","Debug");
+
+# Check if the specified root dir exists
+unless ( -r $root_dir )
+{
+    syslog("LOG_ERR","The specified root dir ($root_dir) does not exists."
+          ." Stopping here.");
+    print "\nThe specified root dir ($root_dir) does not exists. Stopping "
+         ."here.\n";
+}
+
+my @delete_directories = getToDeleteDirectories($root_dir);
+
+if ( @delete_directories > 0 )
+{
+    askAndDeleteDirectories( @delete_directories );
+} else
+{
+    print "\nNo user/directory found to be deleted. Script stops here, bye!"
+         ."\n\n";
+}
+
+# Close log and exit
+closelog();
+print "\n";
+exit SUCCESS_CODE;
+
+################################################################################
+# checkCommandLineArguments
+################################################################################
+# Description:
+#  Check the command line arguments
+################################################################################
+sub checkCommandLineArguments {
+
+  # Check, if help was chosen. If yes, display help and exit
+  if ($opts{'help'})
+  {
+    exec("pod2text $location/$0");
+  } # End of if ($opts{'help'})
+
+} # End of sub checkCommandLineArguments
+
+
+################################################################################
+# getToDeleteDirectories
+################################################################################
+# Description:
+#  
+################################################################################
+
+sub getToDeleteDirectories
+{
+
+    my $root_dir = shift;
+    
+    my @to_delete;
+    
+    # Connect to LDAP 
+    my $connection = connectToLDAP();
+    
+    # Go through the whole direcory and get the users name
+    while( <$root_dir/*> )
+    {
+        my $username = basename($_);
+        
+        # Add the directory to the delete list, if the user is not present
+        # in the LDAP
+        push ( @to_delete, $_ ) if ( ! userIsInLDAP($username,$connection) );
+       
+    }
+    
+    return @to_delete;
+}
+
+
+################################################################################
+# askAndDeleteDirectories
+################################################################################
+# Description:
+#  
+################################################################################
+
+sub askAndDeleteDirectories
+{
+
+    my @directories = @_;
+    
+    # Show the admin all dirs that can be deleted:
+    print "\nThe following directories can be deleted:\n";
+    print join("\n",@directories)."\n\n";
+    
+    # Ask him if he want to delete all directories
+    my $answer = "";
+    while( $answer !~ m/^yes$/i && $answer !~ m/^no$/i)
+    {
+        $answer = ask("Do you want to delete all these directories (yes/no)?"
+                     ,"no");
+    }
+    
+    # If yes delete all these directories
+    if ($answer =~ m/^yes$/i )
+    {
+        print "\nOK, going to delete all directories!\n";
+        sleep 3;
+        deleteDirectories( @directories );
+        return;
+    }
+    
+    # if no, ask him if he wants to delete some of the mentioned directories
+    if ( $answer =~ m/^no$/i )
+    {
+        print "\n";
+        my $partial_answer = "";
+        while( $partial_answer !~ m/^yes$/i && $partial_answer !~ m/^no$/i)
+        {
+            $partial_answer = ask("Would you like to delete some specific "
+                                 ."directories (yes/no)","no");
+        }
+        
+        # If not, we are done
+        if ( $partial_answer =~ m/^no$/i )
+        {
+            print "\nOK nothing to delete, bye!\n\n";
+            return;
+        }
+        
+        # If yes, go through all directories and ask the admin if he wants to
+        # delete this one!
+        my $loop = 1;
+        my @delete_dirs;
+        while ( $loop == 1 )
+        {
+            @delete_dirs = pickDirectories( @directories ); 
+            
+            print "\nYou have picked:\n";
+            print join("\n",@delete_dirs)."\n";
+            my $delete_answer = "";
+            
+            while( $delete_answer !~ m/^yes$/i && $delete_answer !~ m/^no$/i)
+            {
+                $delete_answer = ask("Do you want to delete all these "
+                                    ."directories (yes/no)?","no");
+            }
+            
+            # Check the answer
+            if ( $delete_answer =~ m/^yes$/i )
+            {
+                deleteDirectories( @delete_dirs );
+                $loop = 0;
+            } else
+            {
+                my $again = "";
+                while ( $again !~ m/^yes$/i && $again !~ m/^no$/i)
+                {
+                    $again = ask("Do you want to pick again some directories"
+                                ." which should be deleted (yes/no)?\n","no");
+                }
+                
+                $loop = 0 if ( $again =~ m/^no$/i );
+            }
+            
+        } # End while ( $loop == 1 ) 
+    } # End if ( $answer =~ m/^no$/i )
+}
+
+
+################################################################################
+# pickDirectories
+################################################################################
+# Description:
+#  
+################################################################################
+
+sub pickDirectories
+{
+
+    my @directories = @_;
+    my @picked;
+    
+    foreach my $dir ( @directories )
+    {
+        my $dir_answer = "";
+        print "\n$dir\n";
+        
+        while( $dir_answer !~ m/^yes$/i && $dir_answer !~ m/^no$/i)
+        {
+            $dir_answer = ask("Delete this directory (yes/no)?","no");
+        }
+        
+        push (@picked,$dir) if ( $dir_answer =~ m/^yes$/i );
+    }
+    
+    # Return the picked list
+    return @picked;
+
+}
+
+
+################################################################################
+# deleteDirectories
+################################################################################
+# Description:
+#  
+################################################################################
+
+sub deleteDirectories
+{
+    my @directories = @_;
+    
+    my $error;
+    my $success;
+    
+    # Delete the directory tree
+    rmtree(@directories, {verbose => $debug, safe => $safe, error => \$error,
+                          result => \$success});
+
+    print "\n";
+
+    foreach my $suc ( @$success )
+    {
+        print "Successfully removed $suc\n";
+    }
+    
+    if ( @$error )
+    {
+        print "\nThere was an error while deleting the following directories"
+             .":\n";
+        foreach my $err ( @$error )
+        {
+            my ($file, $message) = %$err;
+            print "$file: $message\n";
+        }
+    }
+
+}
+
+################################################################################
+# connectToLDAP
+################################################################################
+# Description:
+#  
+################################################################################
+
+sub connectToLDAP
+{
+    # Get the information from the configuration file
+    my $user = $cfg->val("LDAP","User");
+    my $password = $cfg->val("LDAP","Password");
+    my $server = $cfg->val("LDAP","Server");
+    my $port = $cfg->val("LDAP","Port");
+    
+    # Connect to the LDAP 
+    my $ldap_connection = Net::LDAP->new( $server,
+                                          port => $port,
+				                          #verify => 'require',
+				                          #capath => '/etc/ssl/certs/',
+                                         );
+
+    # Check for error
+    my $error = $!;
+
+    # if we have the connection bind to the ldap
+    if( $ldap_connection )
+    {
+        my $bind = $ldap_connection->bind($user, password => $password);
+        
+        if( $bind->code() != LDAP_SUCCESS )
+        {
+            my $error_message="Could not bind to $server: ".$bind->error;
+            syslog("LOG_ERR",$error_message);
+            print $error_message."\n";
+            exit;
+        } else
+        {
+            syslog("LOG_INFO","Successful bound to $server");
+            print "\nSuccessful bound to $server\n" if ( $debug);
+        } #end if($bind>code() != LDAP_SUCCESS)
+    } else
+    {
+        syslog("LOG_ERR","Cannot establish connection to the ldap-server "
+              ."server. Error: $error");
+        print "\nCannot establish connection to the ldap-server $server. Error"
+             .": $error\n\n";
+        exit;
+    } # end else from if $ldap_connection
+    
+    return $ldap_connection;
+
+}
+
+################################################################################
+# connectToLDAP
+################################################################################
+# Description:
+#  
+################################################################################
+
+sub userIsInLDAP
+{
+    my $user = shift;
+    my $connection = shift;
+    
+    print "\nCheck user $user for presence\n" if ( $debug == 1 );
+
+    my $base = $cfg->val("LDAP","SearchBase");
+    my $filter = $cfg->val("LDAP","SearchFilter");
+    
+    # Replace the filter: %user% with the username
+    $filter =~ s/%user%/$user/;
+    
+    # Search...
+    my $search_result = $connection->search( base   => $base,
+                                      	     scope  => "sub",
+                                      	     filter => $filter,
+                                     	    );
+ 
+
+    # add the result to an array
+    my @result;
+    foreach my $entry ($search_result->entries) {
+        push(@result,$entry); 
+    }
+    
+    if ( @result == 0)
+    {
+        print "User is not present\n";
+        return 0;
+    } elsif ( @result == 1 )
+    {
+        print "User is present\n";
+        return 1;
+    } elsif ( @result > 1 )
+    {
+        print "Strange: Found user $user more than once in the LDAP!\n";
+        return 1;
+    }
+
+}
+
