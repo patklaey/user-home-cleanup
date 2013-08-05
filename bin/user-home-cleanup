@@ -59,29 +59,40 @@ $| = 1;                        # Turn buffering off, so that the output is flush
 
 =head1 NAME
 
-.pl
+user-home-cleanup
 
 =head1 DESCRIPTION
 
-This script gets the arguments from  ...
-
-The script uses syslog for logging purposes.
-
-Command Line Interface (CLI) parameters:
+This script reads the configuration file located relativly at
+../etc/user-home-cleanup and goes through the specified root directory. For each
+directory under the root directory, the script checks, if the corresponding user 
+can be found in the specified LDAP directory. If not, the script remembers the
+user and asks the admin if the whole user directory should be deleted (the user
+home will be deleted if the admin says yes). 
 
 =head1 USAGE
 
-./
+./user-home-cleanup [-h]
+
+Options:
+
+=over
+
+=item -h
+
+Show this help
+
+=back
 
 =head1 CREATED
 
-2012-01-01 pat.klaey@stepping-stone.ch created
+2013-05-12 pat.klaey@stepping-stone.ch created
 
 =head1 VERSION
 
 =over
 
-=item 2012-01-01 pat.klaey@stepping-stone.ch created
+=item 2013-05-12 pat.klaey@stepping-stone.ch created
 
 =back
 
@@ -100,6 +111,18 @@ Incorporated code with use:
 =item Getopt::Long;
 
 =item Sys::Syslog;
+
+=item Config::IniFiles;
+
+=item Cwd 'abs_path';
+
+=item File::Basename;
+
+=item Sysadm::Install qw(:all);
+
+=item File::Path;
+
+=item Net::LDAP; 
 
 =back
 
@@ -204,7 +227,9 @@ sub checkCommandLineArguments {
 # getToDeleteDirectories
 ################################################################################
 # Description:
-#  
+#   Go through all directories under the given root directory and check if the
+#   user can be found in the LDAP. If not, add the directory to the "to delete"
+#   list.
 ################################################################################
 
 sub getToDeleteDirectories
@@ -236,7 +261,9 @@ sub getToDeleteDirectories
 # askAndDeleteDirectories
 ################################################################################
 # Description:
-#  
+#   Ask the admin if he wants to delete all the directories in the given list.
+#   If yes delete them, if no, ask the admin if he wants to delete a part of 
+#   the given directories. 
 ################################################################################
 
 sub askAndDeleteDirectories
@@ -327,7 +354,9 @@ sub askAndDeleteDirectories
 # pickDirectories
 ################################################################################
 # Description:
-#  
+#   Ask admin for each directory in the given list if he wants to delete it or
+#   not. If yes, add the directory the the "picked" list and finally return this
+#   list.
 ################################################################################
 
 sub pickDirectories
@@ -359,7 +388,7 @@ sub pickDirectories
 # deleteDirectories
 ################################################################################
 # Description:
-#  
+#   Delete all given directories and print the status to stdout.
 ################################################################################
 
 sub deleteDirectories
@@ -397,7 +426,7 @@ sub deleteDirectories
 # connectToLDAP
 ################################################################################
 # Description:
-#  
+#   Connect the the LDAP directory specified in the configuration file.
 ################################################################################
 
 sub connectToLDAP
@@ -448,10 +477,11 @@ sub connectToLDAP
 }
 
 ################################################################################
-# connectToLDAP
+# userIsInLDAP
 ################################################################################
 # Description:
-#  
+#   Check if the specified user is found in the LDAP directory. Use the search
+#   filter from the configuration file.
 ################################################################################
 
 sub userIsInLDAP
